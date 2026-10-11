@@ -1,0 +1,42 @@
+{
+  "schema": 1,
+  "read_only_evidence": "D:\\FeverApps\\tools\\friendswine-release-1.3\\verification\\runtime-observed.json",
+  "python_version": "3.11",
+  "game_pid": 23696,
+  "volatile_flag_mask": 268435456,
+  "cases": {
+    "simple": {
+      "before_flags": 3,
+      "first_flags": 268435459,
+      "hot_flags": 268435459,
+      "arithmetic_correct": true,
+      "co_code_unchanged": true,
+      "only_reviewed_flag_differs": true
+    },
+    "nested": {
+      "before_flags": 3,
+      "first_flags": 268435459,
+      "hot_flags": 268435459,
+      "arithmetic_correct": true,
+      "co_code_unchanged": true,
+      "only_reviewed_flag_differs": true
+    },
+    "method": {
+      "before_flags": 3,
+      "first_flags": 268435459,
+      "hot_flags": 268435459,
+      "arithmetic_correct": true,
+      "co_code_unchanged": true,
+      "only_reviewed_flag_differs": true
+    }
+  },
+  "watched_function": {
+    "id": "ClientUnits.BaseUnit:BaseUnit.init_model_after_loaded",
+    "baseline_sha256": "7aa041645e35d31fbf74016a42cd11609b3e7350e56918438f342fbf9badf4d8",
+    "current_unmasked_sha256": "220177fad21c6a98af99d5ceebbcccb3bc05ac4f77a33df9dff684d1238c17fc",
+    "masked_sha256": "7aa041645e35d31fbf74016a42cd11609b3e7350e56918438f342fbf9badf4d8",
+    "baseline_reproduced_by_only_masking_bit_28": true
+  },
+  "policy": "explicit reviewed native-profile-bound NeoX Python 3.11 only; default mask is zero",
+  "not_concluded": "No claim about JIT implementation or arbitrary future interpreter versions."
+}

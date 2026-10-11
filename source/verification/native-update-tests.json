@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "offline_only": true,
+  "tests_run": 27,
+  "failures": 0,
+  "errors": 0,
+  "passed": true,
+  "duration_seconds": 9.177,
+  "fixture_scope": [
+    "dynamic exports",
+    "whole-image RVA shift",
+    "resource-only update",
+    "noncritical executable code change",
+    "bounded thunk and target",
+    "malformed PE",
+    "forwarder",
+    "missing export",
+    "relocations"
+  ],
+  "failures_detail": []
+}

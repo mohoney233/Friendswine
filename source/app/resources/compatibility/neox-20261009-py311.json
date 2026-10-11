@@ -1,0 +1,60 @@
+{
+  "schema": "friendswine.compatibility.v1",
+  "id": "neox-20261009-py311",
+  "revision": 1,
+  "architecture": "x64",
+  "native_fingerprint": "1438bd0294ee94c884153bdc6bf3adab000beb54341910b4695bec42556af3f0",
+  "runtime": {
+    "schema": 1,
+    "python_version": "3.11",
+    "volatile_code_flags": 268435456,
+    "functions": {
+      "worlds.WorldArticle:WorldArticle.set_model_transform": "de6bfe3c5ee59d6311b79c12d9ca708f8613a16961ec3b10e6a8294c3f04261b",
+      "worlds.WorldArticle:WorldArticle._add_role_model_cb": "de91f36dcddc972c752b4135627d422340bb28f9c0dcaa030442ee24e50c67b0",
+      "worlds.WorldArticle:WorldArticle.clear_old_player_model": "6d6e2bd8e158174eadeb5abe8cbc3fe68d9a459f4b9686c5d6b061263261f6a2",
+      "worlds.WorldArticle:WorldArticle.set_cloth_id": "99d21ab66392bce5d93530ab7abdf68a0202894924d45fc2616d93faa395e71f",
+      "worlds.WorldArticle:WorldArticle.generate_show_cloth_id": "241d29d7540cb0930dd7667a45e693869ec7ce00386441b8dec74d0499c659bc",
+      "worlds.WorldArticle:WorldArticle.get_player_model": "5ef40518c60de0448ea95d868b062e6552a963cf0dacc3c4a0ac4adefc711a7d",
+      "ui.UIArticleRole:UIArticleRole.refresh_world_by_data": "8711d3094eb290137d613b5d8f53041423c6969fa641d16defd556e9d468969d",
+      "ui.UIArticleRole:UIArticleRole.update_item_on_selected": "18f344b9edfdc1f17215be8b58e5df72f5df24ac29ec6e0d989d701e57c9303b",
+      "ClientUnits.BaseUnit:BaseUnit.update_model_scale": "859120bb06bef78dd7c86d892363d9943249ca620ba04b3120f32110c4e2c843",
+      "ClientUnits.BaseUnit:BaseUnit.init_model_after_loaded": "7aa041645e35d31fbf74016a42cd11609b3e7350e56918438f342fbf9badf4d8",
+      "ClientUnits.BaseUnit:BaseUnit.set_scale": "9ec195f2174109089788a501e212c6c351dcb3a20a3488283001b03ed5545812",
+      "ClientUnits.BaseUnit:BaseUnit.get_scale3": "890f380730f6b107a022bb798fbc037d218bded82833c41170ffaa669baa164e"
+    },
+    "capabilities": {
+      "display": [
+        "worlds.WorldArticle:WorldArticle.set_model_transform",
+        "worlds.WorldArticle:WorldArticle._add_role_model_cb",
+        "worlds.WorldArticle:WorldArticle.clear_old_player_model",
+        "worlds.WorldArticle:WorldArticle.set_cloth_id",
+        "worlds.WorldArticle:WorldArticle.generate_show_cloth_id",
+        "worlds.WorldArticle:WorldArticle.get_player_model",
+        "ui.UIArticleRole:UIArticleRole.refresh_world_by_data",
+        "ui.UIArticleRole:UIArticleRole.update_item_on_selected"
+      ],
+      "training": [
+        "ClientUnits.BaseUnit:BaseUnit.update_model_scale",
+        "ClientUnits.BaseUnit:BaseUnit.init_model_after_loaded",
+        "ClientUnits.BaseUnit:BaseUnit.set_scale",
+        "ClientUnits.BaseUnit:BaseUnit.get_scale3"
+      ]
+    },
+    "native_interfaces": {
+      "game3d.frame_delay_exec": {
+        "type": "builtin_function_or_method",
+        "module": "game3d",
+        "name": "frame_delay_exec"
+      },
+      "math3d.vector": {
+        "type": "type",
+        "module": "math3d",
+        "name": "vector"
+      }
+    }
+  },
+  "source": {
+    "label": "当前已验证版本的内置基准",
+    "details": "2026-10-09：原生可执行节及入口指纹、Python3.11脚本只读观察；展示与单人训练缩放来自既有实机验证。资源/代码行号变化可重新检测；未知原生代码或关键脚本实现需重新验证。"
+  }
+}

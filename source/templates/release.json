@@ -1,0 +1,10 @@
+{
+  "product": "Friendswine",
+  "version": "1.3.0",
+  "platform": "Windows x64",
+  "python": "3.14.0",
+  "dotnet": "8.0.30",
+  "created": "2026-10-09",
+  "game_payloads_included": false,
+  "compatibility_policy": "verified native executable family + per-capability script fingerprint + live read-only check"
+}
