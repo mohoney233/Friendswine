@@ -171,6 +171,7 @@ $ACTION_TEXT = @{
     'cache-clear' = '清理兼容缓存'
     'doctor'      = '重新诊断'
     'cleanup'     = '清理残留状态'
+    'adapt'       = '自动重新适配'
 }
 $ACTION_ADMIN = @{
     'start'       = $true
@@ -178,12 +179,16 @@ $ACTION_ADMIN = @{
     'cache-clear' = $false
     'doctor'      = $false
     'cleanup'     = $false
+    'adapt'       = $true
 }
 
 # 错误修复 = 停止并恢复 → 清理残留状态 → 清理兼容缓存 → 重新诊断
+# 若重新诊断发现游戏更新（引擎换了构建），再自动追加：自动重新适配 → 重新诊断
 $script:fixSteps = @('stop', 'cleanup', 'cache-clear', 'doctor')
 $script:fixIndex = -1
 $script:fixReport = $null
+$script:fixKey = ''
+$script:fixAdapted = $false
 
 $clrBack = [System.Drawing.Color]::FromArgb(246, 246, 244)
 $clrCard = [System.Drawing.Color]::White
@@ -290,7 +295,7 @@ $titleLabel.ForeColor = $clrText
 $titleLabel.AutoSize = $true
 $titleLabel.Location = New-Object System.Drawing.Point(4, 8)
 $subLabel = New-Object System.Windows.Forms.Label
-$subLabel.Text = '只有三个按钮：启动、停止；有问题就点「错误修复」'
+$subLabel.Text = '只有三个按钮：启动、停止；有问题就点「错误修复」（检测到游戏更新会自动适配）'
 $subLabel.ForeColor = $clrMuted
 $subLabel.AutoSize = $true
 $subLabel.Location = New-Object System.Drawing.Point(6, 38)
@@ -561,21 +566,27 @@ function Start-StatusPoll {
 function Start-FixStep {
     if ($script:fixIndex -ge $script:fixSteps.Count) {
         $lines = @('修复流程完成：已停止并恢复、清理残留状态、清理兼容缓存、重新诊断。')
+        if ($script:fixAdapted) {
+            $lines = @('修复流程完成：已停止并恢复、清理残留状态、清理兼容缓存、重新诊断、自动重新适配、重新诊断。')
+        }
         if ($script:fixReport) { $lines += $script:fixReport.TrimEnd() }
         $lines += ''
         $lines += $script:logText
         $script:fixIndex = -1
         $script:fixReport = $null
+        $script:fixKey = ''
         Write-Log (($lines -join "`r`n").Trim())
         Set-Busy $false ''
         $script:lastPoll = [DateTime]::MinValue
         return
     }
     $key = $script:fixSteps[$script:fixIndex]
-    $label = '错误修复 ' + ($script:fixIndex + 1) + '/' + $script:fixSteps.Count + '：' + $ACTION_TEXT[$key]
+    $script:fixKey = $key
+    $label = '错误修复 ' + ($script:fixIndex + 1) + '：' + $ACTION_TEXT[$key]
     if (-not (Start-Action $key $label $false)) {
         $script:fixIndex = -1
         $script:fixReport = $null
+        $script:fixKey = ''
         Set-Busy $false ''
     }
 }
@@ -605,6 +616,11 @@ function Complete-Action {
     }
     if ($script:fixIndex -ge 0) {
         $script:fixReport += ('· ' + $job.Label + ' → 退出码 ' + [string]$code + "`r`n")
+        if ($script:fixKey -eq 'doctor' -and $report.Payload -and $report.Payload.adaptation_needed -eq $true) {
+            # 重新诊断发现游戏更新（引擎换了构建）：追加自动重新适配与再次诊断。
+            $script:fixSteps = @('stop', 'cleanup', 'cache-clear', 'doctor', 'adapt', 'doctor')
+            $script:fixAdapted = $true
+        }
         $script:fixIndex++
         Start-FixStep
         return
@@ -624,7 +640,8 @@ function Complete-Poll {
 function Start-Fix {
     if ($script:actionJob) { return }
     $answer = [System.Windows.Forms.MessageBox]::Show(
-        ('错误修复会依次执行：停止并恢复 → 清理兼容缓存 → 重新诊断。' +
+        ('错误修复会依次执行：停止并恢复 → 清理残留状态 → 清理兼容缓存 → 重新诊断。' +
+         "`r`n`r`n如果重新诊断发现游戏更新（引擎换了构建），会自动追加「自动重新适配」。" +
          "`r`n`r`n如果模组正在运行，会先停止并恢复模型。确定继续？"), '错误修复', 'OKCancel', 'Question')
     if ($answer -ne [System.Windows.Forms.DialogResult]::OK) { return }
     if (-not $elevated) {
@@ -636,6 +653,8 @@ function Start-Fix {
     }
     $script:fixReport = ''
     $script:fixIndex = 0
+    $script:fixKey = ''
+    $script:fixAdapted = $false
     $script:logText = ''
     Start-FixStep
 }

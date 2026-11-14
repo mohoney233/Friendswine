@@ -150,16 +150,31 @@ class ReadonlyProbe:
                     'functions': {}, 'capabilities': profile['runtime']['capabilities'],
                     'native_interfaces': {}, 'volatile_code_flags': mask}
         errors = {}
+        expected = profile['runtime']['functions']
+        details = {}
         for identifier in profile['runtime']['functions']:
             function, status = self.runtime.resolve_function(identifier, self.modules)
             if function is None:
                 errors[identifier] = status
                 continue
             try:
-                observed['functions'][identifier] = self.runtime.function_fingerprint(
+                digest = self.runtime.function_fingerprint(
                     function, volatile_code_flags=mask)
             except self.runtime.UnsupportedFingerprint as error:
                 errors[identifier] = str(error)
+                continue
+            observed['functions'][identifier] = digest
+            if digest != expected.get(identifier):
+                # Only a changed implementation carries review evidence.
+                try:
+                    record = self.runtime.function_details(function, volatile_code_flags=mask)
+                except self.runtime.UnsupportedFingerprint as error:
+                    errors[identifier] = 'DETAILS:' + str(error)
+                    continue
+                record['fingerprint'] = digest
+                details[identifier] = record
+        if details:
+            observed['function_details'] = details
         for identifier in ('game3d.frame_delay_exec', 'math3d.vector'):
             try:
                 observed['native_interfaces'][identifier] = self.runtime.native_descriptor(

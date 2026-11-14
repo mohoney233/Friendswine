@@ -19,7 +19,7 @@
 | --- | --- |
 | 启动 | 启动持续效果（角色时装展示页 + 对局：训练场与匹配） |
 | 停止 | 停止效果并把模型恢复原状；关闭游戏前请先点它 |
-| 错误修复 | 依次执行：停止并恢复 → 清理残留状态 → 清理兼容缓存 → 重新诊断，并把结论写进「运行输出」 |
+| 错误修复 | 依次执行：停止并恢复 → 清理残留状态 → 清理兼容缓存 → 重新诊断，并把结论写进「运行输出」。若诊断发现游戏更新（引擎换了构建），会自动追加「自动重新适配」与再次诊断 |
 
 面板顶部实时显示阶段、目标数、兼容校验和数据目录；底部「运行输出」保留每一步动作的原始输出。状态会自动刷新：面板在前台时约每 3 秒一次，切到后台时放慢到约 9 秒。
 
@@ -29,6 +29,8 @@
 
 - 提示需要管理员权限：面板会重新以管理员身份打开自己，确认一次即可。
 - 提示没有检测到 `dwrg.exe`：先启动游戏并进入时装展示页、训练场或匹配对局。
+- 提示检测到游戏更新：引擎换了构建，但原生调用契约一致时，「错误修复」会自动重新适配（只读实机核对通过后生成当前构建的适配配置），随后直接点「启动」即可。
+- 提示游戏脚本实现已变化：这次更新连已审核的脚本实现也改了。程序会生成待复核的适配候选，并在证据目录写出变更取证（期望／观测指纹、引用名、常量与反汇编），需要维护者复核后再选定；另一项不受影响的能力仍可继续使用。
 - 提示没有匹配的已验证适配配置：说明这次游戏更新改变了已审核的原生实现或关键脚本，需要维护者审核并提供适配配置，有时还需要更新程序。
 - 提示游戏实际加载的引擎与磁盘文件不一致：先重启游戏再试。
 
@@ -44,9 +46,11 @@ runtime\python.exe -B -X utf8 app\friendswine.py start --battle
 runtime\python.exe -B -X utf8 app\friendswine.py stop
 runtime\python.exe -B -X utf8 app\friendswine.py check-update
 runtime\python.exe -B -X utf8 app\friendswine.py validate --battle
+runtime\python.exe -B -X utf8 app\friendswine.py adapt
 runtime\python.exe -B -X utf8 app\friendswine.py start-watch --battle
 runtime\python.exe -B -X utf8 app\friendswine.py profiles
 runtime\python.exe -B -X utf8 app\friendswine.py profile-import --file "D:\Downloads\reviewed-profile.json"
+runtime\python.exe -B -X utf8 app\friendswine.py profile-promote --profile "候选ID"
 runtime\python.exe -B -X utf8 app\friendswine.py cache-clear
 runtime\python.exe -B -X utf8 app\friendswine.py cleanup
 ```

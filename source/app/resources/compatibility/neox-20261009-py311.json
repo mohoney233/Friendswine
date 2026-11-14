@@ -4,6 +4,14 @@
   "revision": 1,
   "architecture": "x64",
   "native_fingerprint": "1438bd0294ee94c884153bdc6bf3adab000beb54341910b4695bec42556af3f0",
+  "native_contract": {
+    "schema": "friendswine.native-contract.v1",
+    "exports": {
+      "PyGILState_Ensure": "x64-unwind",
+      "PyGILState_Release": "x64-unwind",
+      "PyRun_SimpleString": "xor-edx-jmp-rel32-to-unwind"
+    }
+  },
   "runtime": {
     "schema": 1,
     "python_version": "3.11",
@@ -55,6 +63,6 @@
   },
   "source": {
     "label": "当前已验证版本的内置基准",
-    "details": "2026-10-09：原生可执行节及入口指纹、Python3.11脚本只读观察；展示与单人训练缩放来自既有实机验证。资源/代码行号变化可重新检测；未知原生代码或关键脚本实现需重新验证。"
+    "details": "2026-10-09：原生可执行节及入口指纹、Python3.11脚本只读观察；展示与单人训练缩放来自既有实机验证。资源/代码行号变化可重新检测；未知原生代码或关键脚本实现需重新验证。原生调用契约（三个导出及其边界类型）与具体构建无关，游戏更新后仍可用于自动重新适配。"
   }
 }

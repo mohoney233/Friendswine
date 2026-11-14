@@ -1,5 +1,5 @@
 ﻿param(
-    [ValidateSet('start','start-watch','pause','resume','stop','status','doctor','check-update','validate','profiles','profile-import','cache-clear','cleanup')]
+    [ValidateSet('start','start-watch','pause','resume','stop','status','doctor','check-update','validate','adapt','profiles','profile-import','profile-promote','profile-select','profile-remove','cache-clear','cleanup')]
     [string]$Action = 'start',
     [switch]$Training,
     [string]$ResultFile = '',
@@ -27,8 +27,10 @@ if ($interactive) {
         'doctor' = '正在做只读环境诊断，不会修改游戏...'
         'check-update' = '正在检查游戏更新兼容性，不会修改游戏...'
         'validate' = '正在做兼容性验证，只做只读检查，不会启动缩放...'
+        'adapt' = '正在检测游戏更新并重新适配，只做只读检查与本地适配记录...'
         'profiles' = '当前兼容配置如下...'
         'profile-import' = '导入适配包，请按提示输入本地 JSON/ZIP 文件路径...'
+        'profile-promote' = '正在把已复核的适配候选转成正式适配配置...'
         'cache-clear' = '正在清理兼容缓存...'
         'cleanup' = '正在归档并清除上一次会话的残留状态，不会修改游戏...'
     }
@@ -37,7 +39,7 @@ if ($interactive) {
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = New-Object Security.Principal.WindowsPrincipal($identity)
 $admin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-if (($Action -in @('start','start-watch','pause','resume','stop','validate')) -and -not $admin) {
+if (($Action -in @('start','start-watch','pause','resume','stop','validate','adapt')) -and -not $admin) {
     if ($ResultFile) { throw '未能获得管理员权限，操作已取消。' }
     # The elevation hand-off result lives inside the installation directory so
     # the mod never writes into the system drive's %TEMP%.

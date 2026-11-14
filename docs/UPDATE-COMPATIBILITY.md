@@ -2,11 +2,44 @@
 
 1.3 增加了更新检查、按名称解析原生导出、脚本实现检查和本地纯 JSON 适配包。其目标是自动识别仍兼容的更新，并在不兼容时给出可定位的原因；不保证任何未来版本都能运行。
 
+1.3.1 在此基础上增加了**游戏更新后的自动重新适配**：原生侧不再只认"整包字节完全一致"这一个条件，而是同时记录一份与构建无关的**原生调用契约**；脚本侧仍然逐个函数核对已审核实现。
+
+## 原生侧的两级证据
+
+| 证据 | 含义 | 判定 |
+| --- | --- | --- |
+| `native_fingerprint` | 精确字节证据：三个必要导出及其目标实现的完整字节，加上全部可执行 PE 节的内容哈希。 | 匹配即最强证据，可直接使用。 |
+| `native_contract` | 结构证据：三个必要导出是否存在、各自采用哪种已审核边界（`x64-unwind` 或唯一允许的 `xor edx,edx; jmp rel32` 叶函数语法）。它描述的是"注入器如何调用 CPython"，与具体构建无关。 | 契约一致只说明"调用约定没变"，**不能单独证明兼容**；必须再由只读主线程探针在本局实机核对脚本实现，才能写入任何缩放。 |
+
+契约一致而字节指纹不一致，就是"游戏换了引擎构建"。此时程序会：
+
+1. 离线重新检查当前 `neox_engine.dll`（只读 PE 解析，不加载 DLL、不访问游戏进程）。
+2. 找到契约一致的已审核配置作为基线。
+3. 派发固定只读探针，在游戏主线程核对 12 个已审核脚本函数与 Python 版本。
+4. 全部未变 → 自动生成本地适配配置，把这份已审核的运行时描述重新绑定到当前引擎构建，并记录来源（基线配置、引擎版本、原生契约、实机只读证据）。下次启动即为精确匹配。
+5. 有函数实现变化 → **不自动启用**。生成"适配候选"与变更取证（见下），等待人工复核。
+
+## 变更取证与人工复核
+
+脚本实现发生变化时，`adapt` 会在证据目录写出 `function-changes.md`：期望指纹与观测指纹、参数个数、引用名、常量，以及该函数的反汇编指令清单。这只是给复核者看的材料，**不参与任何兼容性判定**；判定仍然只看指纹。
+
+复核要点是"模组依赖的数据接口是否还在"，而不是函数名是否还在。已审核的 8 个展示函数中，模组只读取它们写入的字段（`player_model`、`cloth_id`、`show_cloth_id`、`selected_article_id`、`model_id_cache`），并不调用它们；因此要确认的是这些字段的产生与语义未变。训练能力中的 `BaseUnit.update_model_scale` 是模组唯一会调用的已审核函数，它变化时必须重新审核后才能继续。
+
+复核通过后：
+
+```bat
+runtime\python.exe -B -X utf8 app\friendswine.py profile-promote --profile "候选ID"
+```
+
+候选会被转成正式配置并自动选中，来源标记为"人工复核通过（自动适配候选）"，候选文件本身保留在候选目录作为审计记录。
+
 ## 自动适配的边界
 
 | 更新情况 | 处理方式 |
 | --- | --- |
 | 游戏文件整体哈希改变，但受检查的原生实现和相关脚本实现不变 | 原生与脚本检查通过后可以继续使用。整体文件哈希只用于版本识别、证据关联和缓存定位。 |
+| 引擎换了构建：字节指纹改变，但原生调用契约一致、12 个已审核脚本实现未变 | 「错误修复」自动追加"自动重新适配"：实机只读核对通过后生成并选用当前构建的适配配置。 |
+| 引擎换了构建，且某个已审核脚本实现也变了 | 不自动启用。生成适配候选与变更取证，等待人工复核后再 `profile-promote`。 |
 | 导出地址改变 | 从当前 DLL 按名称重新解析地址。只有原生实现指纹仍匹配已验证配置时才允许接入。 |
 | 脚本路径或行号改变，受检查函数的实现未变 | 指纹忽略源码路径及行号，不再因固定行号改变而拒绝。 |
 | 新增角色或时装，相关模型接口与实现不变 | 继续使用既有模型发现机制；展示和训练能力分别检查。 |
@@ -26,7 +59,7 @@
 
 1. 启动游戏，进入角色展示页、训练场或匹配对局。
 2. 点「启动」。「启动」流程本身就会先做完整检查：只读读取当前游戏进程元数据和磁盘引擎、列出原生匹配配置，再派发固定的只读主线程探针核对展示和训练所需的脚本实现；全部通过后才接入，不会执行未知实现。
-3. 被拒绝时，或只想做一次排除性检查时，点「错误修复」。它按固定顺序执行停止并恢复、清理兼容缓存、重新诊断，并把结论写进「运行输出」；需要时由面板请求管理员权限。
+3. 被拒绝时，或只想做一次排除性检查时，点「错误修复」。它按固定顺序执行停止并恢复、清理残留状态、清理兼容缓存、重新诊断，并把结论写进「运行输出」；需要时由面板请求管理员权限。若重新诊断发现游戏更新（引擎换了构建）且原生调用契约仍一致，会自动追加"自动重新适配"和再次诊断两步；脚本实现有变化时只生成候选与取证，等待人工复核。
 
 面板只暴露「启动」「停止」「错误修复」三个按钮，上面的检查动作与命令行入口完全等价（见下）。
 
@@ -52,12 +85,16 @@
 runtime\python.exe -B -X utf8 app\friendswine.py profiles
 runtime\python.exe -B -X utf8 app\friendswine.py check-update
 runtime\python.exe -B -X utf8 app\friendswine.py validate --battle
+runtime\python.exe -B -X utf8 app\friendswine.py adapt
 runtime\python.exe -B -X utf8 app\friendswine.py profile-import --file "D:\Downloads\reviewed-profile.json"
+runtime\python.exe -B -X utf8 app\friendswine.py profile-promote --profile "候选ID"
 runtime\python.exe -B -X utf8 app\friendswine.py profile-select --profile "配置ID"
 runtime\python.exe -B -X utf8 app\friendswine.py profile-select --profile auto
 runtime\python.exe -B -X utf8 app\friendswine.py profile-remove --profile "导入配置ID"
 runtime\python.exe -B -X utf8 app\friendswine.py cache-clear
 ```
+
+`adapt` 需要游戏正在运行：它要做一次只读主线程探针。它不写任何模型，也不启动缩放，只在本地写出适配配置或候选。`profiles` 会同时列出已验证配置与待复核候选（候选带 `origin: candidate` 标记，不会被当作已验证配置使用）。
 
 `profiles` 命令可以查看配置，`profile-import --file` 只接受用户明确指定的本地文件。此版本没有自动联网查找、下载或安装适配包的机制。
 
@@ -86,6 +123,8 @@ runtime\python.exe -B -X utf8 app\friendswine.py cache-clear
 
 维护者应保存更新前后原生检查和运行时观察结果，辨别仅位置变化与实现变化。新的配置必须依据人工审核和相应场景验证形成，不能简单复制新报告的哈希以绕过拒绝。
 
-配置格式为 `friendswine.compatibility.v1`，包含 `id`、`revision`、`architecture: "x64"`、精确 `native_fingerprint`、运行时函数／能力描述及 `source`。运行时结构版本为 `1`，可选 `volatile_code_flags` 受上述范围限制；训练能力必须列出受审核的 `BaseUnit.update_model_scale` 恢复实现。配置包格式为 `friendswine.profile-pack.v1`，包含 `profiles` 和其规范化 JSON 内容的 `sha256`。程序的 `compatibility.py` 是这些格式、大小限制与完整性规则的执行定义。
+配置格式为 `friendswine.compatibility.v1`，包含 `id`、`revision`、`architecture: "x64"`、精确 `native_fingerprint`、运行时函数／能力描述及 `source`，可选 `native_contract`（格式 `friendswine.native-contract.v1`，含 `schema` 与三个导出各自的边界类型）。运行时结构版本为 `1`，可选 `volatile_code_flags` 受上述范围限制；训练能力必须列出受审核的 `BaseUnit.update_model_scale` 恢复实现。配置包格式为 `friendswine.profile-pack.v1`，包含 `profiles` 和其规范化 JSON 内容的 `sha256`。程序的 `compatibility.py` 是这些格式、大小限制与完整性规则的执行定义。
+
+自动生成的本地配置（"自动重新适配"）与人工复核后转正的配置（"人工复核通过（自动适配候选）"）都带 `source` 说明，记录基线配置、引擎版本与契约；它们不是签名，也不是发布者身份证明。
 
 测试与发布记录应区分原生结构检查、只读脚本检查、模拟测试和实际游戏画面／恢复验证，不将其中一项替代另一项。

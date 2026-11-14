@@ -1,5 +1,5 @@
 """Fixed-purpose local launcher and controls for the Identity V visual mod."""
-import argparse,csv,ctypes,datetime,hashlib,json,math,os,shutil,subprocess,sys,time,uuid
+import argparse,copy,csv,ctypes,datetime,hashlib,json,math,os,shutil,subprocess,sys,time,uuid
 sys.dont_write_bytecode=True
 from ctypes import wintypes
 from pathlib import Path
@@ -17,8 +17,10 @@ EXPORTS=ROOT/'resources'/'neox_exports.root.verified.txt'
 EXPORTS_SHA='7c53fd45d952293f4246ff1b2bc61e48aa8e5dc552722c265beb53d7d2d78d99'
 BUNDLED_PROFILES=ROOT/'resources'/'compatibility'
 PROFILE_STORE=DATA/'compatibility'/'profiles'
+PROFILE_CANDIDATES=DATA/'compatibility'/'candidates'
 PROFILE_PREFERENCES=DATA/'compatibility'/'preferences.json'
 COMPAT_CACHE=DATA/'compatibility'/'cache'
+BASELINE=DATA/'compatibility'/'baseline.json'
 CHANNEL_STATE_FILES=('status.json','control.json','watch-control.json','watcher.json')
 
 
@@ -107,14 +109,70 @@ def available_profiles():
 def preferred_profile():
     return read_json(PROFILE_PREFERENCES).get('profile_id')
 
-def native_candidates(native):
-    candidates=compat.matching_profiles(native,available_profiles())
+def engine_version(game_dir):
+    """Read the game's own engine version marker. Plain text, no engine parsing."""
+    try:
+        text=(Path(game_dir)/'engine_version').read_text(encoding='utf-8',errors='replace').strip()
+    except OSError:
+        return None
+    if not text:
+        return None
+    label,_,digest=text.partition(':')
+    return {'label':label.strip(),'digest':digest.strip() or None}
+
+def baseline_state():
+    """The engine build this installation last verified against."""
+    record=read_json(BASELINE)
+    return record if record.get('engine_sha256') else {}
+
+def write_baseline(native,profile,version=None,kind='exact'):
+    record={'schema':1,'engine_sha256':native['engine_sha256'],
+            'native_fingerprint':native['native_fingerprint'],
+            'profile_id':profile['id'],'revision':profile['revision'],
+            'match_kind':kind,'observed_at':time.time()}
+    if version:
+        record['engine_version']=version.get('label')
+    atomic_json(BASELINE,record)
+    return record
+
+def engine_update_state(native,game_dir):
+    """Compare the running engine with the engine this installation last verified."""
+    version=engine_version(game_dir)
+    base=baseline_state()
+    state={'engine_sha256':native['engine_sha256'],'native_fingerprint':native['native_fingerprint'],
+           'engine_version':version,'baseline_engine_sha256':base.get('engine_sha256'),
+           'baseline_profile_id':base.get('profile_id'),'baseline_at':base.get('observed_at'),
+           'baseline_engine_version':base.get('engine_version')}
+    if not base.get('engine_sha256'):
+        state['state']='UNVERIFIED'
+    elif base['engine_sha256']==native['engine_sha256']:
+        state['state']='CURRENT'
+    else:
+        state['state']='UPDATED'
+    state['version_changed']=bool(base.get('engine_version') and version and
+                                  base['engine_version']!=version.get('label'))
+    return state
+
+def native_matches(native):
+    """Reviewed profiles that may serve this engine, strongest evidence first.
+
+    'exact'    - the reviewed byte fingerprint of this very build matches.
+    'contract' - the reviewed native calling contract still holds for this
+                 build; the script layer is still proven live by the read-only
+                 probe before anything is written to the game.
+    """
+    matches=compat.match_profiles(native,available_profiles())
     selected=preferred_profile()
     if selected:
-        candidates=[p for p in candidates if p['id']==selected]
-    if not candidates:
-        raise RuntimeError('UNSUPPORTED_NATIVE_IMPLEMENTATION: 原生实现没有匹配的已验证适配配置；请在控制面板点「错误修复」重新检查，或导入维护者提供的适配包')
-    return candidates
+        matches=[item for item in matches if item[0]['id']==selected]
+    if not matches:
+        raise RuntimeError('UNSUPPORTED_NATIVE_IMPLEMENTATION: 原生实现没有匹配的已验证适配配置；'
+                           '如果刚更新过游戏，请在控制面板点「错误修复」，会自动重新适配')
+    best=matches[0][1]
+    return [(profile,kind) for profile,kind in matches if kind==best]
+
+def native_candidates(native):
+    return [profile for profile,_ in native_matches(native)]
 
 def bound_process(pid,created,game):
     if (game_pids()!=[pid] or abs(created_time(pid)-created)>.001 or
@@ -309,7 +367,10 @@ def start(battle_enabled=False,watch_generation=None):
         report['native']=native
         if modules[0]['disk_sha256']!=native['engine_sha256']:
             raise RuntimeError('引擎文件在诊断期间发生变化')
-        candidates=native_candidates(native)
+        matches=native_matches(native)
+        candidates=[profile for profile,_ in matches]
+        kind=matches[0][1]
+        report['native_match']=kind
         created=created_time(pid)
         report['game_created_unix']=created
         probe=probe_runtime(GAME,pid,created,native,candidates,evidence)
@@ -317,6 +378,16 @@ def start(battle_enabled=False,watch_generation=None):
         profile=choose_runtime_profile(candidates,probe,battle_enabled)
         report['profile_id']=profile['id']
         cache_probe(native,profile,probe)
+        version=engine_version(GAME.parent)
+        baseline={'id':profile['id'],'revision':profile['revision']}
+        if kind=='contract':
+            # The engine build changed under a verified configuration: bind that
+            # specification to this build so the next start is an exact match.
+            saved=ensure_adapted_profile(native,profile,version)
+            report['adapted_profile']=saved
+            if saved:
+                baseline={'id':saved['id'],'revision':saved['revision']}
+        report['baseline']=write_baseline(native,baseline,version,kind)
         toolroot=CHANNEL/'toolroot'
         payload=ROOT/'persistent_runtime.py'
         options={'run_id':run_id,'pid':pid,'game_created_unix':created,'battle_enabled':battle_enabled,
@@ -507,13 +578,31 @@ def doctor():
         native=inspect_engine(engine)
         result['native']=native
         profiles=available_profiles()
-        matches=compat.matching_profiles(native,profiles)
-        result['matching_profiles']=[{'id':p['id'],'origin':p['_origin'],'revision':p['revision']} for p in matches]
+        matches=compat.match_profiles(native,profiles)
+        result['matching_profiles']=[{'id':p['id'],'origin':p['_origin'],
+                                      'revision':p['revision'],'match':kind}
+                                     for p,kind in matches]
+        result['exact_profile_matches']=[p['id'] for p,kind in matches if kind=='exact']
+        result['contract_profile_matches']=[p['id'] for p,kind in matches if kind=='contract']
         result['preferred_profile']=preferred_profile()
         result['loaded_path_matches']=(len(modules)==1 and
             normalized_path(modules[0]['path'])==normalized_path(engine) and
             modules[0].get('disk_sha256')==native['engine_sha256'])
         result['native_supported']=bool(matches and result['loaded_path_matches'])
+        result['native_supported_exact']=bool(result['exact_profile_matches'] and
+                                              result['loaded_path_matches'])
+        result['engine']={'path':str(engine),'sha256':native['engine_sha256'],
+                          'native_fingerprint':native['native_fingerprint'],
+                          'version':engine_version(game.parent)}
+        result['engine_update']=engine_update_state(native,game.parent)
+        # An engine update leaves the reviewed runtime specification usable but
+        # unbound to this build: the adaptation step can bind it again.
+        result['adaptation_needed']=bool(result['contract_profile_matches'] and
+                                          not result['exact_profile_matches'])
+        result['adapted_profiles']=[{'id':p['id'],'revision':p['revision'],
+                                     'native_fingerprint':p['native_fingerprint'],
+                                     'label':p.get('source',{}).get('label')}
+                                    for p in profiles if p.get('_origin')=='imported']
         # Native readiness is not a claim about uninspected live scripts/models.
         result['ready_for_runtime_probe']=bool(result['elevated'] and result['native_supported'] and result['injector_present'])
         result['reason']='RUNTIME_PROBE_REQUIRED' if matches else 'UNSUPPORTED_NATIVE_IMPLEMENTATION'
@@ -557,12 +646,162 @@ def check_update(live=False,battle_enabled=False):
     atomic_json(evidence/'compatibility.json',result)
     return result
 
+def adapted_profile_id(native):
+    return 'neox-auto-'+native['engine_sha256'][:12]
+
+def ensure_adapted_profile(native,profile,version=None):
+    """Bind the verified runtime specification to this engine build.
+
+    The result is a local profile: it records which reviewed profile it came
+    from and which build it was verified on, and it still needs a live probe.
+    """
+    details=('自动重新适配：基线 %s；引擎 %s（%s）；原生调用契约一致；脚本实机只读检查通过。'
+             % (profile['id'],(version or {}).get('label','未知版本'),native['engine_sha256'][:16]))
+    minted=compat.mint_adapted_profile(profile,native,profile_id=adapted_profile_id(native),
+                                       details=details)
+    try:
+        return compat.save_profile(minted,PROFILE_STORE,BUNDLED_PROFILES)
+    except compat.CompatibilityError:
+        # Already adapted for this build; the stored profile stays authoritative.
+        return None
+
+def write_change_report(evidence,baseline,details):
+    """Write the review evidence of changed implementations next to the probe.
+
+    It shows what the changed function looks like now, so a maintainer can
+    decide on the observed implementation instead of only learning that its
+    fingerprint moved.
+    """
+    lines=['# 脚本实现变更取证','','生成时间：'+datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+           '基线配置：'+str(baseline.get('id')),'']
+    expected=baseline.get('runtime',{}).get('functions',{})
+    for identifier in sorted(details):
+        record=details[identifier]
+        lines.append('## '+identifier)
+        lines.append('')
+        lines.append('- 期望指纹（已审核基线）：'+str(expected.get(identifier)))
+        lines.append('- 观测指纹（当前游戏）：'+str(record.get('fingerprint')))
+        lines.append('- 参数个数：'+str(record.get('argcount'))+'；flags：'+str(record.get('flags'))+
+                     '；字节码长度：'+str(record.get('code_len')))
+        lines.append('- 引用名：'+', '.join(record.get('names',[])))
+        lines.append('- 常量：'+', '.join(record.get('consts',[])[:40]))
+        lines.append('')
+        lines.append('```')
+        for line in record.get('instructions',[]):
+            lines.append(line)
+        lines.append('```')
+        lines.append('')
+    path=Path(evidence)/'function-changes.md'
+    path.write_text('\n'.join(lines),encoding='utf-8')
+    return str(path)
+
+def adapt():
+    """Re-derive the compatibility evidence for the engine that is running now.
+
+    Offline first: the engine is inspected again and matched against the
+    reviewed profiles. A contract match is then proven live by the read-only
+    probe, and only then is a profile bound to this build written locally.
+    Reviewed script implementations that changed are never activated by this
+    action; they produce a candidate profile and a report instead.
+    """
+    if not ctypes.windll.shell32.IsUserAnAdmin():
+        raise RuntimeError('请从已用管理员身份运行的终端或 Codex 启动；本工具不修改 UAC 设置')
+    pids=game_pids()
+    game=select_game(load_configuration(CONFIG),pids)
+    engine=game.parent/'neox_engine.dll'
+    native=inspect_engine(engine)
+    version=engine_version(game.parent)
+    matches=compat.match_profiles(native,available_profiles())
+    exact=[profile for profile,kind in matches if kind=='exact']
+    contract=[profile for profile,kind in matches if kind=='contract']
+    result={'action':'adapt','adapted':False,'model_writes':False,
+            'engine_sha256':native['engine_sha256'],'native_fingerprint':native['native_fingerprint'],
+            'engine_version':version,'exact_profiles':[p['id'] for p in exact],
+            'contract_profiles':[p['id'] for p in contract]}
+    if exact:
+        result['reason']='ALREADY_MATCHED'
+        result['profile_id']=exact[0]['id']
+        result['baseline']=write_baseline(native,exact[0],version,'exact')
+        return result
+    if not contract:
+        result['reason']='NO_COMPATIBLE_CONTRACT'
+        result['detail']='当前引擎的原生调用契约与已验证配置不同，需要维护者提供新的适配包'
+        return result
+    baseline=contract[0]
+    pid=pids[0]
+    created=created_time(pid)
+    evidence=DATA/'evidence'/'adaptations'/uuid.uuid4().hex
+    evidence.mkdir(parents=True,exist_ok=False)
+    probe=probe_runtime(game,pid,created,native,[baseline],evidence)
+    record=next((item for item in probe.get('profiles',[]) if item['id']==baseline['id']),{})
+    observed=record.get('observed_runtime',{})
+    changed,unresolved=compat.changed_functions(baseline,observed)
+    states={name:record.get('diagnostics',{}).get('capabilities',{}).get(name,{}).get('status')
+            for name in ('display','training')}
+    result.update(probe=probe,evidence=str(evidence),changed_functions=changed,
+                  unresolved_functions=unresolved,capability_states=states,
+                  baseline_profile=baseline['id'])
+    details=observed.get('function_details') if type(observed) is dict else None
+    if details:
+        result['change_report']=write_change_report(evidence,baseline,details)
+    if changed:
+        details=('自动适配候选：引擎 %s；已变化脚本：%s；未观测脚本：%s。候选需维护者复核后再导入。'
+                 % ((version or {}).get('label','未知版本'),','.join(changed),
+                    ','.join(unresolved) or '无'))
+        candidate=compat.mint_candidate_profile(baseline,native,observed,
+            profile_id='neox-candidate-'+native['engine_sha256'][:12],details=details)
+        saved=compat.save_candidate(candidate,PROFILE_CANDIDATES)
+        result['reason']='SCRIPT_IMPLEMENTATION_CHANGED'
+        result['candidate']=saved
+        result['detail']='已生成待复核的适配候选：'+saved['path']
+    elif unresolved:
+        result['reason']='RUNTIME_NOT_OBSERVED'
+        result['detail']='相关脚本尚未加载，无法完成适配；请进入角色时装展示页后重试'
+    else:
+        saved=ensure_adapted_profile(native,baseline,version)
+        result['adapted']=True
+        result['reason']='ADAPTED'
+        result['profile_id']=saved['id'] if saved else adapted_profile_id(native)
+        result['profile_path']=saved['path'] if saved else None
+        result['baseline']=write_baseline(native,baseline,version,'contract')
+        result['detail']='已按当前引擎重新绑定已验证的适配配置'
+    atomic_json(evidence/'adaptation.json',result)
+    return result
+
+def promote_candidate(profile_id):
+    """Promote one reviewed candidate into the selected compatibility profile.
+
+    Promotion is the maintainer's decision: the candidate stays in the
+    candidate store as the audit trail, and the promoted profile records that
+    it was reviewed by a human.
+    """
+    candidates={p['id']:p for p in compat.load_candidates(PROFILE_CANDIDATES)}
+    if profile_id not in candidates:
+        raise ValueError('未知适配候选；先用 profiles 查看候选列表')
+    candidate=candidates[profile_id]
+    fingerprint=candidate['native_fingerprint']
+    promoted=copy.deepcopy(compat.plain_profile(candidate))
+    promoted['id']='neox-'+fingerprint[:12]+'-py311'
+    promoted['revision']=min(int(candidate['revision'])+1,2147483647)
+    details=(str(candidate.get('source',{}).get('details','')).strip('；')+
+             '；人工复核通过并选定。')
+    promoted['source']={'label':'人工复核通过（自动适配候选）','details':details[:2040]}
+    saved=compat.save_profile(promoted,PROFILE_STORE,BUNDLED_PROFILES)
+    atomic_json(PROFILE_PREFERENCES,{'profile_id':promoted['id']})
+    return {'promoted':True,'id':promoted['id'],'path':saved['path'],
+            'selected':promoted['id'],'source_candidate':profile_id,
+            'native_fingerprint':fingerprint,'requires_runtime_probe':True}
+
 def profile_action(action,filename=None,profile_id=None):
     if action=='profiles':
         return {'preferred_profile':preferred_profile(),'profiles':[
             {'id':p['id'],'revision':p['revision'],'origin':p['_origin'],
              'native_fingerprint':p['native_fingerprint'],'source':p['source']}
-            for p in available_profiles()]}
+            for p in available_profiles()],
+            'candidates':[
+            {'id':p['id'],'revision':p['revision'],'origin':p['_origin'],
+             'native_fingerprint':p['native_fingerprint'],'source':p['source']}
+            for p in compat.load_candidates(PROFILE_CANDIDATES)]}
     if action=='profile-import':
         if not filename:
             filename=input('适配包 JSON/ZIP 的完整路径: ').strip().strip('"')
@@ -581,6 +820,8 @@ def profile_action(action,filename=None,profile_id=None):
         if preferred_profile()==profile_id:
             atomic_json(PROFILE_PREFERENCES,{'profile_id':None})
         return result
+    if action=='profile-promote':
+        return promote_candidate(profile_id)
     if action=='cache-clear':
         return compat.clear_cache(COMPAT_CACHE)
     raise ValueError('未知配置操作')
@@ -601,11 +842,31 @@ def activity_verdict(action,output):
             return '发现问题：没有检测到正在运行的 dwrg.exe，请先启动游戏'
         if not output.get('matching_profiles'):
             return '发现问题：没有匹配的已验证适配配置；可在控制面板点「错误修复」重新检查'
+        if output.get('adaptation_needed'):
+            version=(output.get('engine') or {}).get('version') or {}
+            label=version.get('label') or '未知版本'
+            return ('发现问题：检测到游戏更新（引擎 %s），当前引擎还没有对应的已验证适配；'
+                    '点「错误修复」会自动重新适配' % label)
         if not output.get('loaded_path_matches'):
             return '发现问题：游戏实际加载的引擎与磁盘文件不一致'
         if action=='check-update':
             return '诊断结果正常：原生接口匹配，可以直接点「启动」'
         return '诊断结果正常：路径、权限、进程与原生接口检查均通过'
+    if action=='adapt':
+        if error:
+            return '发现问题：'+str(error)
+        reason=output.get('reason')
+        if reason=='ADAPTED':
+            return '诊断结果正常：已按当前引擎重新适配，现在可以点「启动」'
+        if reason=='ALREADY_MATCHED':
+            return '诊断结果正常：当前游戏版本已有匹配的已验证适配配置'
+        if reason=='SCRIPT_IMPLEMENTATION_CHANGED':
+            return '发现问题：游戏脚本实现已变化，已生成待复核的适配候选'
+        if reason=='RUNTIME_NOT_OBSERVED':
+            return '发现问题：相关脚本尚未加载，请进入角色时装展示页后重新适配'
+        if reason=='NO_COMPATIBLE_CONTRACT':
+            return '发现问题：当前引擎与已验证配置的原生调用契约不同，需要维护者提供新的适配包'
+        return '诊断结果正常：无需重新适配'
     if action=='validate':
         if error:
             return '发现问题：'+str(error)
@@ -644,8 +905,8 @@ def activity_verdict(action,output):
 def main():
     parser=argparse.ArgumentParser(description='第五人格朋友的酒：持续人物外观缩放')
     parser.add_argument('--version',action='version',version=VERSION)
-    parser.add_argument('action',choices=('start','stop','pause','resume','status','watch','start-watch','configure','doctor','check-update','validate','profiles','profile-import','profile-select','profile-remove','cache-clear','cleanup'),
-                        help='cleanup: 归档并清除上一次会话的残留状态，之后可以重新启动')
+    parser.add_argument('action',choices=('start','stop','pause','resume','status','watch','start-watch','configure','doctor','check-update','validate','adapt','profiles','profile-import','profile-promote','profile-select','profile-remove','cache-clear','cleanup'),
+                        help='cleanup: 归档并清除上一次会话的残留状态，之后可以重新启动；adapt: 检测到游戏更新后重新适配')
     parser.add_argument('--battle',action='store_true',help='开启本机已验证的对局适配；匹配对局可生效')
     parser.add_argument('--game',help='configure: 存在的 dwrg.exe 绝对路径；省略配置时自动识别唯一运行进程')
     parser.add_argument('--file',help='profile-import: 本地 JSON/ZIP 纯数据适配包')
@@ -653,9 +914,9 @@ def main():
     args=parser.parse_args()
     if args.file and args.action!='profile-import':
         parser.error('--file 仅用于 profile-import')
-    if args.profile and args.action not in ('profile-select','profile-remove'):
-        parser.error('--profile 仅用于 profile-select/profile-remove')
-    if args.action in ('profile-select','profile-remove') and not args.profile:
+    if args.profile and args.action not in ('profile-select','profile-remove','profile-promote'):
+        parser.error('--profile 仅用于 profile-select/profile-remove/profile-promote')
+    if args.action in ('profile-select','profile-remove','profile-promote') and not args.profile:
         parser.error('需要 --profile ID')
     if args.action=='configure':
         if not args.game:
@@ -667,9 +928,11 @@ def main():
         output=doctor()
     elif args.action in ('check-update','validate'):
         output=check_update(live=args.action=='validate',battle_enabled=args.battle)
+    elif args.action=='adapt':
+        output=adapt()
     elif args.action=='cleanup':
         output=cleanup()
-    elif args.action in ('profiles','profile-import','profile-select','profile-remove','cache-clear'):
+    elif args.action in ('profiles','profile-import','profile-select','profile-remove','profile-promote','cache-clear'):
         output=profile_action(args.action,args.file,args.profile)
     elif args.action=='start':
         output=start(battle_enabled=args.battle)

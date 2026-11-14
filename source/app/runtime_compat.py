@@ -4,6 +4,7 @@ Fingerprints intentionally ignore source file and line metadata. Profiles are
 evidence of a previously reviewed implementation, not permission to learn and
 execute an arbitrary new implementation on the first encounter.
 """
+import dis
 import hashlib
 import json
 import math
@@ -157,6 +158,41 @@ def native_descriptor(value):
     if kind not in (types.BuiltinFunctionType, type):
         raise UnsupportedFingerprint('UNSUPPORTED_NATIVE_INTERFACE_TYPE:' + kind.__name__)
     return {'type': kind.__name__, 'module': value.__module__, 'name': value.__name__}
+
+
+def _readable_const(value):
+    """A bounded, printable view of one constant. Never a decision input."""
+    if isinstance(value, types.CodeType):
+        return '<code ' + value.co_name + '>'
+    if value is None or isinstance(value, (bool, int, float, str, bytes)):
+        return repr(value)[:240]
+    return '<' + type(value).__name__ + '>'
+
+
+def function_details(function, *, volatile_code_flags=0, max_instructions=400):
+    """Diagnostic view of one observed implementation.
+
+    This is evidence for a reviewer, never a compatibility decision: it exists
+    so a maintainer can read what a changed function now does instead of only
+    seeing that its fingerprint moved. Nothing here is executed or called.
+    """
+    if type(function) is not types.FunctionType:
+        raise UnsupportedFingerprint('NOT_PYTHON_FUNCTION')
+    code = function.__code__
+    instructions = []
+    try:
+        for item in dis.get_instructions(function):
+            instructions.append(item.opname + (' ' + item.argrepr if item.argrepr else ''))
+            if len(instructions) >= max_instructions:
+                instructions.append('...TRUNCATED')
+                break
+    except Exception as error:
+        instructions = ['DISASSEMBLY_UNAVAILABLE:' + type(error).__name__]
+    return {'argcount': code.co_argcount, 'flags': code.co_flags & ~volatile_code_flags,
+            'names': list(code.co_names), 'varnames': list(code.co_varnames),
+            'freevars': list(code.co_freevars), 'cellvars': list(code.co_cellvars),
+            'consts': [_readable_const(item) for item in code.co_consts],
+            'code_len': len(code.co_code), 'instructions': instructions}
 
 
 def collect_observed(modules=None, *, volatile_code_flags=0):

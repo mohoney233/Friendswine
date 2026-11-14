@@ -18,6 +18,8 @@ import zipfile
 PROFILE_SCHEMA = 'friendswine.compatibility.v1'
 PACK_SCHEMA = 'friendswine.profile-pack.v1'
 CACHE_SCHEMA = 'friendswine.compatibility-cache.v1'
+CONTRACT_SCHEMA = 'friendswine.native-contract.v1'
+REQUIRED_EXPORTS = ('PyGILState_Ensure', 'PyGILState_Release', 'PyRun_SimpleString')
 MAX_BYTES = 1024 * 1024
 MAX_PROFILES = 32
 MAX_STORE_FILES = 128
@@ -126,9 +128,49 @@ def runtime_fingerprint(runtime):
     return _digest(validate_runtime(runtime))
 
 
+def native_contract(report):
+    """Structural calling contract of an inspected engine build.
+
+    The contract describes *how* the injector reaches CPython - which exports
+    exist, and which reviewed boundary each one has - not the bytes of one
+    build. It is therefore stable across engine updates, while the byte
+    fingerprint stays the exact evidence for a single build.
+    """
+    if type(report) is not dict:
+        return None
+    exports = report.get('exports')
+    if type(exports) is not dict or set(exports) != set(REQUIRED_EXPORTS):
+        return None
+    contract = {}
+    for name, procedure in exports.items():
+        if type(procedure) is not dict:
+            return None
+        kind = procedure.get('boundary_kind')
+        if type(kind) is not str or not kind or len(kind) > 64:
+            return None
+        contract[name] = kind
+    return {'schema': CONTRACT_SCHEMA, 'exports': contract}
+
+
+def validate_contract(contract):
+    _keys(contract, ('schema', 'exports'), 'CONTRACT')
+    if contract['schema'] != CONTRACT_SCHEMA:
+        _fail('UNKNOWN_CONTRACT_SCHEMA')
+    exports = contract['exports']
+    if type(exports) is not dict or set(exports) != set(REQUIRED_EXPORTS):
+        _fail('INVALID_CONTRACT_EXPORTS')
+    for kind in exports.values():
+        _text(kind, 64, 'CONTRACT_BOUNDARY_KIND')
+    return contract
+
+
+def contract_digest(contract):
+    return _digest(validate_contract(contract))
+
+
 def validate_profile(profile):
     _keys(profile, ('schema', 'id', 'revision', 'architecture', 'native_fingerprint',
-                    'runtime', 'source'), 'PROFILE')
+                    'runtime', 'source'), 'PROFILE', optional=('native_contract',))
     if profile['schema'] != PROFILE_SCHEMA:
         _fail('UNKNOWN_PROFILE_SCHEMA')
     if type(profile['id']) is not str or not _ID.fullmatch(profile['id']):
@@ -138,6 +180,8 @@ def validate_profile(profile):
     if profile['architecture'] != 'x64':
         _fail('UNSUPPORTED_ARCHITECTURE')
     _sha(profile['native_fingerprint'], 'NATIVE_FINGERPRINT')
+    if 'native_contract' in profile:
+        validate_contract(profile['native_contract'])
     validate_runtime(profile['runtime'])
     _keys(profile['source'], ('label', 'details'), 'SOURCE')
     _text(profile['source']['label'], 160, 'SOURCE_LABEL')
@@ -150,6 +194,11 @@ def validate_profile(profile):
 def profile_digest(profile):
     plain = {key: value for key, value in profile.items() if key not in _RESERVED}
     return _digest(validate_profile(plain))
+
+
+def plain_profile(profile):
+    """The profile document without the store bookkeeping fields."""
+    return {key: value for key, value in profile.items() if key not in _RESERVED}
 
 
 def make_profile_pack(profiles):
@@ -262,6 +311,130 @@ def select_profile(native_report, profiles, profile_id=None):
     return matches[0]
 
 
+def match_profiles(native_report, profiles):
+    """Match profiles against an inspected engine, keeping the admitting evidence.
+
+    'exact'    - the reviewed byte fingerprint of this very build matches.
+    'contract' - the reviewed native calling contract still holds for this
+                 build. The reviewed script implementations are still proven
+                 live by the read-only probe before anything is written.
+    """
+    if type(native_report) is not dict or _architecture(native_report) != 'x64':
+        return []
+    fingerprint = native_report.get('native_fingerprint')
+    exact_fingerprint = type(fingerprint) is str and bool(_SHA.fullmatch(fingerprint))
+    contract = native_contract(native_report)
+    exact, compatible = [], []
+    for profile in profiles:
+        if profile.get('architecture') != 'x64':
+            continue
+        if exact_fingerprint and profile['native_fingerprint'] == fingerprint:
+            exact.append(profile)
+            continue
+        expected = profile.get('native_contract')
+        if contract is not None and type(expected) is dict and expected == contract:
+            compatible.append(profile)
+    order = lambda profile: (profile.get('_origin') != 'imported', profile['id'], -profile['revision'])
+    return ([(profile, 'exact') for profile in sorted(exact, key=order)] +
+            [(profile, 'contract') for profile in sorted(compatible, key=order)])
+
+
+def changed_functions(baseline, observed):
+    """Which reviewed script implementations no longer match the observation.
+
+    Returns (changed, unresolved): changed functions were observed with a
+    different implementation, unresolved ones were not observed at all.
+    """
+    expected = baseline.get('runtime', {}).get('functions', {})
+    seen = observed.get('functions', {}) if type(observed) is dict else {}
+    if type(expected) is not dict or type(seen) is not dict:
+        return [], sorted(expected)
+    changed = sorted(identifier for identifier, digest in seen.items()
+                     if identifier in expected and expected[identifier] != digest)
+    unresolved = sorted(identifier for identifier in expected if identifier not in seen)
+    return changed, unresolved
+
+
+def mint_adapted_profile(baseline, report, *, profile_id, details):
+    """Bind a reviewed runtime specification to the engine build in front of us."""
+    profile = {key: value for key, value in baseline.items() if key not in _RESERVED}
+    fingerprint = report.get('native_fingerprint') if type(report) is dict else None
+    if type(fingerprint) is not str or not _SHA.fullmatch(fingerprint):
+        _fail('INVALID_NATIVE_FINGERPRINT')
+    contract = native_contract(report)
+    if contract is None:
+        _fail('MISSING_NATIVE_CONTRACT')
+    profile['id'] = profile_id
+    profile['revision'] = min(int(baseline['revision']) + 1, 2147483647)
+    profile['native_fingerprint'] = fingerprint
+    profile['native_contract'] = contract
+    profile['source'] = {'label': '自动重新适配', 'details': details}
+    return validate_profile(profile)
+
+
+def mint_candidate_profile(baseline, report, observed, *, profile_id, details):
+    """Draft a profile for a build whose reviewed script implementations changed.
+
+    The draft is never loaded as a verified profile. Only a maintainer may
+    import it, after reviewing which functions changed.
+    """
+    profile = {key: value for key, value in baseline.items() if key not in _RESERVED}
+    fingerprint = report.get('native_fingerprint') if type(report) is dict else None
+    if type(fingerprint) is not str or not _SHA.fullmatch(fingerprint):
+        _fail('INVALID_NATIVE_FINGERPRINT')
+    contract = native_contract(report)
+    if contract is None:
+        _fail('MISSING_NATIVE_CONTRACT')
+    runtime = dict(profile['runtime'])
+    functions = dict(runtime['functions'])
+    seen = observed.get('functions', {}) if type(observed) is dict else {}
+    if type(seen) is not dict:
+        _fail('INVALID_OBSERVED_FUNCTIONS')
+    for identifier, digest in seen.items():
+        if identifier in functions and _SHA.fullmatch(str(digest)):
+            functions[identifier] = digest
+    runtime['functions'] = functions
+    profile['runtime'] = runtime
+    profile['id'] = profile_id
+    profile['revision'] = min(int(baseline['revision']) + 1, 2147483647)
+    profile['native_fingerprint'] = fingerprint
+    profile['native_contract'] = contract
+    profile['source'] = {'label': '自动适配候选（待维护者复核）', 'details': details}
+    return validate_profile(profile)
+
+
+def _validate_function_details(details, expected, observed):
+    """Review evidence for changed implementations. It never grants a match.
+
+    The detail record only says what the new implementation looks like now;
+    the fingerprint it carries must still be the observed one, so a report
+    can never be used to claim an unreviewed implementation was verified.
+    """
+    if details is None:
+        return
+    if type(details) is not dict:
+        _fail('PROBE_FUNCTION_DETAILS')
+    for identifier, record in details.items():
+        if identifier not in expected:
+            _fail('PROBE_FUNCTION_DETAILS_ID')
+        _keys(record, ('fingerprint', 'argcount', 'flags', 'names', 'varnames',
+                       'freevars', 'cellvars', 'consts', 'code_len', 'instructions'),
+              'PROBE_FUNCTION_DETAIL')
+        _sha(record['fingerprint'], 'PROBE_FUNCTION_DETAIL')
+        if record['fingerprint'] != observed.get(identifier):
+            _fail('PROBE_FUNCTION_DETAIL_FINGERPRINT')
+        if type(record['argcount']) is not int or type(record['flags']) is not int:
+            _fail('PROBE_FUNCTION_DETAIL')
+        if type(record['code_len']) is not int or record['code_len'] < 0:
+            _fail('PROBE_FUNCTION_DETAIL')
+        for key in ('names', 'varnames', 'freevars', 'cellvars', 'consts', 'instructions'):
+            value = record[key]
+            if type(value) is not list or len(value) > 512:
+                _fail('PROBE_FUNCTION_DETAIL')
+            if any(type(item) is not str or len(item) > 512 for item in value):
+                _fail('PROBE_FUNCTION_DETAIL')
+
+
 def validate_probe_result(result, nonce, pid, profiles):
     """Validate this trusted probe's response envelope and internal consistency.
 
@@ -307,7 +480,8 @@ def validate_probe_result(result, nonce, pid, profiles):
         expected = candidates[profile_id]['runtime']
         observed = record['observed_runtime']
         _keys(observed, ('schema', 'python_version', 'functions', 'capabilities',
-                        'native_interfaces'), 'PROBE_OBSERVED_RUNTIME', optional=('volatile_code_flags',))
+                        'native_interfaces'), 'PROBE_OBSERVED_RUNTIME',
+              optional=('volatile_code_flags', 'function_details'))
         if (type(observed['schema']) is not int or observed['schema'] != 1
                 or observed['python_version'] != version
                 or observed['capabilities'] != expected['capabilities']):
@@ -329,6 +503,8 @@ def validate_probe_result(result, nonce, pid, profiles):
                 # reported but can never satisfy the admitted descriptor.
                 if value is not None:
                     _text(value, 160, 'PROBE_NATIVE_DESCRIPTOR_VALUE')
+        _validate_function_details(observed.get('function_details'), expected['functions'],
+                                   observed['functions'])
         _sha(record['observed_runtime_fingerprint'], 'PROBE_RUNTIME_FINGERPRINT')
         if record['observed_runtime_fingerprint'] != _digest(observed):
             _fail('PROBE_OBSERVATION_DIGEST_MISMATCH')
@@ -443,6 +619,59 @@ def import_profile_pack(source, store, bundled_dir=None):
     return {'ids': [profile['id'] for profile in profiles], 'path': str(destination.resolve()),
             'source': str(Path(source).resolve()), 'sha256': pack['sha256'],
             'signature_verified': False, 'requires_runtime_probe': True}
+
+
+def save_profile(profile, store, bundled_dir=None):
+    """Write one locally adapted profile into the user store.
+
+    The profile is bound to one engine build; it is data, and every use still
+    needs a live probe.
+    """
+    validate_profile(profile)
+    with _store_lock(store) as directory:
+        existing = load_profiles(bundled_dir, directory)
+        if any(item['id'] == profile['id'] for item in existing):
+            _fail('PROFILE_ID_ALREADY_EXISTS:' + profile['id'])
+        if len(list(directory.glob('*.json'))) >= MAX_STORE_FILES:
+            _fail('TOO_MANY_PROFILE_FILES')
+        path = directory / ('local-' + profile['id'] + '.json')
+        _atomic_json(path, profile)
+    return {'id': profile['id'], 'path': str(path.resolve()), 'revision': profile['revision'],
+            'native_fingerprint': profile['native_fingerprint'], 'origin': 'imported',
+            'signature_verified': False, 'requires_runtime_probe': True}
+
+
+def save_candidate(profile, store):
+    """Store a drafted profile that is not a verified configuration."""
+    validate_profile(profile)
+    directory = Path(store)
+    _no_link(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / (profile['id'] + '.json')
+    _atomic_json(path, profile)
+    return {'id': profile['id'], 'path': str(path.resolve()), 'revision': profile['revision'],
+            'origin': 'candidate', 'requires_review': True, 'requires_runtime_probe': True}
+
+
+def load_candidates(store):
+    """List drafted candidates. They are never returned as verified profiles."""
+    result = []
+    directory = Path(store)
+    _no_link(directory)
+    if not directory.exists():
+        return result
+    for path in sorted(directory.glob('*.json')):
+        try:
+            document = _loads(_read_file(path))
+        except (OSError, CompatibilityError):
+            continue
+        if type(document) is dict and document.get('schema') == PROFILE_SCHEMA:
+            try:
+                result.append(dict(document, _content_digest=profile_digest(document),
+                                   _origin='candidate', _path=str(path.resolve())))
+            except CompatibilityError:
+                continue
+    return result
 
 
 def remove_imported_profile(profile_id, store, bundled_dir=None):
