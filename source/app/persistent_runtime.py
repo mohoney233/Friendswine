@@ -3,7 +3,7 @@ import os,sys,time,json,types,threading,traceback
 from collections import deque
 
 REGISTRY='friendswine_persistent_v1'
-VERSION='1.3.0'
+VERSION='1.3.1'
 options=globals().get('__fw_options__',{})
 if type(options) is not dict:
     options={}

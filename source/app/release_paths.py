@@ -6,7 +6,7 @@ import os
 from ctypes import wintypes
 from pathlib import Path
 
-VERSION = '1.3.0'
+VERSION = '1.3.1'
 ENGINE_SHA = 'fbc8e87c97bb5b5b7e9d3d5de3668c04255ce9afd6038bdf29fa1f7de4ae8af6'
 
 

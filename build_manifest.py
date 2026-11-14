@@ -26,5 +26,5 @@ for path in sorted(root.rglob('*')):
 for entry in root.iterdir():
     if entry.name == 'data':
         stray.append(entry.name)
-(root / 'manifest.json').write_text(json.dumps({'product': 'Friendswine', 'version': '1.3.0', 'algorithm': 'SHA-256', 'files': files}, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+(root / 'manifest.json').write_text(json.dumps({'product': 'Friendswine', 'version': '1.3.1', 'algorithm': 'SHA-256', 'files': files}, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
 print(json.dumps({'manifest_files': len(files), 'root': str(root), 'runtime_data_ignored': stray}))

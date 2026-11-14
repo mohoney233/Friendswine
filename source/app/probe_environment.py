@@ -11,6 +11,11 @@ import datetime as dt
 import hashlib
 import json
 from pathlib import Path
+import sys
+
+# The host decodes this report as UTF-8; keep stdout UTF-8 whatever the
+# console code page is, so a localized path can never break the reader.
+sys.stdout.reconfigure(encoding='utf-8')
 
 
 def sha256_file(path):

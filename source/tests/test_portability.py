@@ -127,7 +127,7 @@ class PortabilityTests(unittest.TestCase):
         exec(compile(prefix,str(payload),'exec'),namespace)
         self.assertEqual(Path(namespace['ROOT']),app)
         self.assertEqual(Path(namespace['OUT']),channel/'status.json')
-        self.assertEqual(namespace['VERSION'],'1.3.0')
+        self.assertEqual(namespace['VERSION'],'1.3.1')
         (app/'mock_private.py').write_text("MARKER='relocated'\n",encoding='utf8')
         module=namespace['load_private']('mock_private.py','offline_private')
         self.assertEqual(module.MARKER,'relocated')
@@ -142,8 +142,22 @@ class PortabilityTests(unittest.TestCase):
             result=launcher.doctor()
         self.assertFalse(result['ready_to_start'])
         self.assertFalse(result['native_supported'])
-        self.assertIn('diagnostic_error',result)
+        # An absent game is a normal state, not a diagnostic failure.
+        self.assertEqual(result['reason'],'GAME_NOT_RUNNING')
+        self.assertNotIn('diagnostic_error',result)
         self.assertFalse(missing.parent.exists())
+
+    def test_tasklist_localized_output_never_breaks_the_pid_scan(self):
+        # tasklist prints localized text (including "no matching task") in the
+        # console code page; those bytes are not valid UTF-8.
+        row='"dwrg.exe","25764","Console","1","12,345 K"\r\n'.encode('mbcs')
+        with patch.object(launcher.subprocess,'check_output',return_value=row):
+            self.assertEqual(launcher.game_pids(),[25764])
+        message=b'\xd0\xc4\xd0\xc4\r\n'
+        with patch.object(launcher.subprocess,'check_output',return_value=message):
+            self.assertEqual(launcher.game_pids(),[])
+        with patch.object(launcher.subprocess,'check_output',side_effect=OSError('tasklist missing')):
+            self.assertEqual(launcher.game_pids(),[])
 
     def test_unsupported_engine_preflight_never_reaches_injector(self):
         channel=self.root/'用户状态'/'persistent'
@@ -181,7 +195,7 @@ class PortabilityTests(unittest.TestCase):
         probe=(launcher.ROOT/'probe_environment.py').read_text(encoding='utf8')
         self.assertNotIn('bridge_state',probe)
         self.assertNotIn('fuxiang/ipc',probe)
-        self.assertEqual(launcher.VERSION,'1.3.0')
+        self.assertEqual(launcher.VERSION,'1.3.1')
 
 
 if __name__=='__main__':

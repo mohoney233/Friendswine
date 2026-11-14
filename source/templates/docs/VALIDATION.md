@@ -1,12 +1,12 @@
-# 1.3.0 交付验证记录
+# 1.3.1 交付验证记录
 
-日期：2026-10-09。所有本次检查在原工作电脑完成，分别记录模拟检查、只读脚本检查和实际模型运行，不将它们合并为所有未来版本保证。
+日期：2026-11-14。1.3.0 的检查记录在下方原节内保留；1.3.1 的新增证据集中在文末「游戏更新后的自动重新适配」一节。所有本次检查在原工作电脑完成，分别记录模拟检查、只读脚本检查和实际模型运行，不将它们合并为所有未来版本保证。
 
 ## 自动检查
 
 | 检查 | 结果 | 范围 |
 | --- | --- | --- |
-| 单元测试 | 166 项通过 | 展示／训练生命周期和恢复、不可观测模型退役、清理残留状态、便携数据目录与路径隔离、状态 IO、实现指纹、配置包、探针报告和启动决策 |
+| 单元测试 | 195 项通过 | 展示／训练生命周期和恢复、不可观测模型退役、清理残留状态、便携数据目录与路径隔离、状态 IO、实现指纹、配置包、探针报告、启动决策，以及 1.3.1 新增的原生调用契约、两级匹配、适配配置铸造、候选复核与选定 |
 | 原生 PE 检查 | 27 项通过 | RVA 搬移、资源变化、代码变化、缺失／转发导出、边界错误、重定位、跳转及加载头校验 |
 
 原生模拟证据说明：地址整体变化和资源变化保持实现指纹，任何可执行节代码变化得到新指纹；缺失导出、未确认函数边界等直接拒绝。这是离线夹具验证，不能代替真实未来周更。
@@ -49,6 +49,18 @@
 - **不可观测模型**：对局中曾出现 `TARGET_ERROR`／`RESTORE_EXCEPTION`，原因均为 `NONPOSITIVE_OR_NONFINITE_SCALE`（模型仍报告有效但尺度不可读）。旧逻辑会把该目标锁成未恢复并阻止后续重新接入。现改为先请求已验证的官方重建，仍不可观测则退役并记录事件；新增 6 项单元测试覆盖「退役」「官方重建后恢复」「重建失败也退役」「可见但形状未知仍保留未恢复」四类分支。
 - **清理残留状态**：新增 `cleanup` 动作（面板「错误修复」第二步调用）。真实冒烟确认它先归档再删除 `status.json`、`watch-control.json`、`watcher.json`，通道清空、证据保留；运行中的会话被拒绝清理。命令行与单元测试各覆盖一次。
 - 单元检查合计 166 项通过。上述均为离线与本机现场证据，不构成未来版本或任意对局环境的保证。
+
+## 补充记录（2026-11-14）：游戏更新后的自动重新适配
+
+**触发事实**：2026-11-12 20:57 游戏替换了引擎与内置脚本包——`engine_version` 由 `release_2026_0421` 变为 `release_2026_0421_1012`，`neox_engine.dll` 由 160,534,528 变为 161,932,288 字节，`packages/builtin/res.npk` 同步替换。1.3.0 的精确原生指纹因此由 `1438bd02…` 变为 `fb26bd83…`，内置配置不再匹配，启动被 `UNSUPPORTED_NATIVE_IMPLEMENTATION` 拒绝。这是真实周更，不是夹具。
+
+**原生侧实机证据**：只读探针在新构建上成功派发——主线程与回调线程同为 34968，`read_only=true`、`model_setters_called=0`、`frames=1`。探针要执行就必须在游戏内调用 `PyGILState_Ensure` → `PyRun_SimpleString` → `PyGILState_Release`，因此这次成功本身就是"CPython 调用路径在本构建仍然可用"的实机证据。三个导出的边界类型与 1.3.0 基线完全一致（`x64-unwind`、`x64-unwind`、`xor-edx-jmp-rel32-to-unwind`），即调用契约未变。
+
+**脚本侧实机证据**：12 项已审核实现中 11 项逐字节未变，仅 `worlds.WorldArticle:WorldArticle._add_role_model_cb` 变化（`de91f36d…` → `72438fd4…`），展示能力因此判为 `IMPLEMENTATION_CHANGED`，训练能力仍为 `SUPPORTED`。变更取证给出该函数的引用名、常量与反汇编：它仍调用 `set_model_transform(model, user_data['pos'], user_data['scale'])`，仍执行 `self.player_model = model`，仍走 `career_hunter_helper.apply_model_transform(model)`，仍写入 `model_id_cache[ROLE_MODEL] = show_cloth_id`。模组只读取这些字段、从不调用该函数（见 1.3.0 审核记录），数据接口未变。复核通过后用 `profile-promote` 转正为 `neox-fb26bd83c5de-py311`（来源标记"人工复核通过（自动适配候选）"，候选文件保留为审计记录）。
+
+**转正后的实机运行**：`validate --battle` 报告展示与训练均 `SUPPORTED`、`pending=false`、`partial=false`；`start --battle` 进入 `RUNNING`，训练场识别并修改 5 个模型；`stop` 返回 `restored=true`，`modified`、`unresolved`、`pending_restores` 均为 0。随后 `doctor` 报告 `native_supported_exact=true`、`engine_update.state=CURRENT`、`adaptation_needed=false`。
+
+**边界**：以上是单次实机采样，不是对所有未来周更的保证。脚本实现变化的自动路径**不启用**任何能力，只产出候选与取证；契约不一致时不派发探针。1.3.1 新增 23 项单元测试（契约提取与拒绝、两级匹配优先级、适配配置铸造、候选不进入已验证集合、复核转正与选定、doctor 的更新判定），合计 195 项通过。
 
 ## 限制
 

@@ -30,7 +30,7 @@ def digest(path):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--python-zip', type=Path)
-    parser.add_argument('--out', type=Path, default=ROOT / 'dist' / 'Friendswine-1.3.0')
+    parser.add_argument('--out', type=Path, default=ROOT / 'dist' / 'Friendswine-1.3.1')
     args = parser.parse_args()
     out = args.out.resolve()
     if out.exists():

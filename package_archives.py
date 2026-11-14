@@ -5,7 +5,7 @@ from pathlib import Path
 import zipfile
 
 ROOT = Path(__file__).resolve().parent
-VERSION = '1.3.0'
+VERSION = '1.3.1'
 
 
 def digest(path):

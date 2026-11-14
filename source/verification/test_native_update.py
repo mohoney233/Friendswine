@@ -11,7 +11,7 @@ import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-EXE = ROOT / 'dist' / 'Friendswine-1.3.0' / 'bin' / 'fuxiang-inject.exe'
+EXE = ROOT / 'dist' / 'Friendswine-1.3.1' / 'bin' / 'fuxiang-inject.exe'
 # Set FW_TEST_INJECTOR when testing a different rebuilt output.
 import os
 EXE = Path(os.environ.get('FW_TEST_INJECTOR', str(EXE)))

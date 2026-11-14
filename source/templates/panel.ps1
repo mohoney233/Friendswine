@@ -1,5 +1,5 @@
 ﻿<#
-Friendswine 控制面板 1.3.0 —— 模组对用户可见的唯一入口。
+Friendswine 控制面板 1.3.1 —— 模组对用户可见的唯一入口。
 
 只保留三个按钮：启动、停止、错误修复。
 后端动作仍由 launch.ps1（动作派发）与 app\friendswine.py 实现；本脚本只做呈现
@@ -20,7 +20,7 @@ $launch = Join-Path $root 'launch.ps1'
 $python = Join-Path $root 'runtime\python.exe'
 $launcher = Join-Path $root 'app\friendswine.py'
 $uiTemp = Join-Path $root 'data\_ui'
-$VERSION = '1.3.0'
+$VERSION = '1.3.1'
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing

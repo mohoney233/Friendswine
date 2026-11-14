@@ -257,8 +257,23 @@ def read_json(path):
             time.sleep(.05)
 
 def game_pids():
-    rows=csv.reader(subprocess.check_output(['tasklist','/FI','IMAGENAME eq dwrg.exe','/FO','CSV','/NH'],text=True,creationflags=subprocess.CREATE_NO_WINDOW).splitlines())
-    return [int(row[1]) for row in rows if len(row)>1 and row[0].lower()=='dwrg.exe']
+    # tasklist prints localized text (including "no matching task") in the
+    # console code page, so the raw bytes are decoded with the system code
+    # page instead of assuming UTF-8. The image name and PID stay ASCII.
+    try:
+        raw=subprocess.check_output(['tasklist','/FI','IMAGENAME eq dwrg.exe','/FO','CSV','/NH'],
+                                    creationflags=subprocess.CREATE_NO_WINDOW)
+    except (OSError,subprocess.SubprocessError):
+        return []
+    text=raw.decode('mbcs' if os.name=='nt' else 'utf8',errors='replace')
+    pids=[]
+    for row in csv.reader(text.splitlines()):
+        if len(row)>1 and row[0].strip().lower()=='dwrg.exe':
+            try:
+                pids.append(int(row[1]))
+            except ValueError:
+                continue
+    return pids
 
 def created_time(pid):
     kernel=ctypes.WinDLL('kernel32',use_last_error=True)
@@ -353,7 +368,7 @@ def start(battle_enabled=False,watch_generation=None):
     evidence.mkdir(parents=True,exist_ok=True)
     report={'run_id':run_id,'pid':pid,'started_at':time.time(),'battle_enabled':battle_enabled}
     try:
-        checked=subprocess.run([sys.executable,str(ROOT/'probe_environment.py'),'--pid',str(pid),'--out',str(evidence/'preflight.json')],capture_output=True,text=True,creationflags=subprocess.CREATE_NO_WINDOW)
+        checked=subprocess.run([sys.executable,str(ROOT/'probe_environment.py'),'--pid',str(pid),'--out',str(evidence/'preflight.json')],capture_output=True,text=True,encoding='utf8',errors='replace',creationflags=subprocess.CREATE_NO_WINDOW)
         if checked.returncode:
             raise RuntimeError('进程诊断失败 '+checked.stderr)
         diagnostic=read_json(evidence/'preflight.json')
@@ -565,10 +580,14 @@ def doctor():
         result['configured_game']=config.get('game_exe')
         pids=game_pids()
         result['game_pids']=pids
+        if not pids:
+            # No game process is a normal state, not a diagnostic failure.
+            result['reason']='GAME_NOT_RUNNING'
+            return result
         game=select_game(config,pids)
         result['game_exe']=str(game)
         checked=subprocess.run([sys.executable,str(ROOT/'probe_environment.py'),'--pid',str(pids[0])],
-                               capture_output=True,text=True,timeout=30,creationflags=subprocess.CREATE_NO_WINDOW)
+                               capture_output=True,text=True,encoding='utf8',errors='replace',timeout=30,creationflags=subprocess.CREATE_NO_WINDOW)
         if checked.returncode:
             raise RuntimeError('只读进程诊断失败 '+checked.stderr[:1000])
         diagnostic=json.loads(checked.stdout)
